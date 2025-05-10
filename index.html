@@ -1,432 +1,511 @@
-import React, { useState, useEffect, useCallback } from 'react';
-
-// Constants for CEC calculations
-const SQFT_TO_SQM_CONVERSION = 0.092903;
-const BASE_LOAD_AREA_THRESHOLD = 90; // m²
-const BASE_LOAD_INITIAL_WATTS = 5000; // W
-const ADDITIONAL_LOAD_PER_AREA_INCREMENT = 1000; // W per 90m² or portion
-const RANGE_BASE_LOAD_WATTS = 6000; // W
-const RANGE_EXCESS_THRESHOLD_W = 12000; // Watts
-const RANGE_EXCESS_PERCENTAGE = 0.40; // 40%
-const OTHER_LOADS_THRESHOLD_WATTS = 1500; // W
-const OTHER_LOADS_NO_RANGE_INITIAL_THRESHOLD_WATTS = 6000; // W
-const OTHER_LOADS_NO_RANGE_INITIAL_PERCENTAGE = 1.00; // 100%
-const OTHER_LOADS_NO_RANGE_EXCESS_PERCENTAGE = 0.25; // 25%
-const OTHER_LOADS_WITH_RANGE_PERCENTAGE = 0.25; // 25%
-
-const VOLTAGE_FOR_AMPS = 240; // Volts
-
-// Constants for Rule 62-118
-const HEATING_DEMAND_FIRST_THRESHOLD_KW = 10; // kW
-const HEATING_DEMAND_FIRST_THRESHOLD_W = HEATING_DEMAND_FIRST_THRESHOLD_KW * 1000; // Watts
-const HEATING_DEMAND_FIRST_PERCENTAGE = 1.00; // 100%
-const HEATING_DEMAND_BALANCE_PERCENTAGE = 0.75; // 75%
-
-
-// Helper component for input fields
-const InputField = ({ label, type = "number", value, onChange, unit, placeholder, min = 0, step = "any", className = "" }) => (
-    <div className={`mb-4 ${className}`}>
-        <label className="block text-sm font-medium text-gray-300 mb-1">{label}</label>
-        <div className="flex items-center">
-            <input
-                type={type}
-                value={value}
-                onChange={onChange}
-                placeholder={placeholder || (type === "number" ? "0" : "")}
-                min={min}
-                step={step}
-                className="mt-1 block w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-white"
-            />
-            {unit && <span className="ml-2 text-gray-400">{unit}</span>}
-        </div>
-    </div>
-);
-
-// Helper component for displaying calculation steps
-const CalculationStep = ({ label, value, unit = "W", details }) => (
-    <div className="mb-2 p-2 bg-gray-700 rounded-md">
-        <div className="flex justify-between items-center">
-            <span className="text-gray-300">{label}:</span>
-            <span className="font-semibold text-indigo-400">{value.toLocaleString()} {unit}</span>
-        </div>
-        {details && <p className="text-xs text-gray-400 mt-1">{details}</p>}
-    </div>
-);
-
-function App() {
-    // --- State Variables ---
-    const [aboveGroundAreaInput, setAboveGroundAreaInput] = useState('');
-    const [belowGroundAreaInput, setBelowGroundAreaInput] = useState('');
-    const [areaUnit, setAreaUnit] = useState('sqft'); // Default to square feet
-    const [totalEffectiveLivingAreaM2, setTotalEffectiveLivingAreaM2] = useState(0);
-
-    // Space Heating States (Rule 62-118)
-    const [totalConnectedSpaceHeatingW, setTotalConnectedSpaceHeatingW] = useState(''); // User input for total connected heating
-    const [applyRule62_118_3, setApplyRule62_118_3] = useState(false); // Checkbox for Rule 62-118 3)
-    const [applyRule62_118_4, setApplyRule62_118_4] = useState(false); // Checkbox for Rule 62-118 4)
-    const [calculatedHeatingDemandW, setCalculatedHeatingDemandW] = useState(0); // Heating load after demand factors
-
-    const [airConditioningLoad, setAirConditioningLoad] = useState('');
-
-    const [hasElectricRange, setHasElectricRange] = useState(true); // Default to true
-    const [electricRangeRatingW, setElectricRangeRatingW] = useState('6000'); // Default to 6000W
-
-    const [tanklessWaterHeaterLoad, setTanklessWaterHeaterLoad] = useState('');
-    const [evSupplyEquipmentLoad, setEvSupplyEquipmentLoad] = useState('');
-
-    const [otherLoads, setOtherLoads] = useState([{ id: Date.now(), name: '', value: '' }]);
-
-    const [calculatedLoadA, setCalculatedLoadA] = useState(0);
-    const [calculationStepsA, setCalculationStepsA] = useState([]);
-    const [finalCalculatedLoad, setFinalCalculatedLoad] = useState(0); 
-
-
-    // --- Input Handlers ---
-    const handleAboveGroundAreaInputChange = (e) => setAboveGroundAreaInput(e.target.value);
-    const handleBelowGroundAreaInputChange = (e) => setBelowGroundAreaInput(e.target.value);
-    const handleAreaUnitChange = (e) => setAreaUnit(e.target.value);
-    
-    const handleOtherLoadChange = (id, fieldName, newValue) => {
-        setOtherLoads(prevLoads =>
-            prevLoads.map(load => 
-                load.id === id ? { ...load, [fieldName]: newValue } : load
-            )
-        );
-    };
-    const addOtherLoad = () => setOtherLoads(prevLoads => [...prevLoads, { id: Date.now(), name: '', value: '' }]);
-    const removeOtherLoad = (id) => setOtherLoads(prevLoads => prevLoads.filter(load => load.id !== id));
-
-    // --- Calculation Logic ---
-    const calculateLoad = useCallback(() => {
-        const stepsA = [];
-
-        // Living Area Calculation
-        let inputAboveM2 = parseFloat(aboveGroundAreaInput) || 0;
-        let inputBelowM2 = parseFloat(belowGroundAreaInput) || 0;
-        if (areaUnit === 'sqft') {
-            inputAboveM2 *= SQFT_TO_SQM_CONVERSION;
-            inputBelowM2 *= SQFT_TO_SQM_CONVERSION;
-        }
-        const effectiveAboveGroundM2 = inputAboveM2;
-        const effectiveBelowGroundM2 = inputBelowM2 * 0.75;
-        const currentTotalEffectiveLivingAreaM2 = effectiveAboveGroundM2 + effectiveBelowGroundM2;
-        setTotalEffectiveLivingAreaM2(currentTotalEffectiveLivingAreaM2);
-        
-        // Rule 8-200 1) a) Calculation
-        let totalLoadA = 0;
-        let basicLoadLivingArea = 0;
-        let basicLoadDetails = "";
-        if (currentTotalEffectiveLivingAreaM2 > 0) {
-            basicLoadLivingArea = BASE_LOAD_INITIAL_WATTS;
-            basicLoadDetails = `${BASE_LOAD_INITIAL_WATTS}W for first ${Math.min(currentTotalEffectiveLivingAreaM2, BASE_LOAD_AREA_THRESHOLD).toFixed(2)} m² of effective living area.`;
-            if (currentTotalEffectiveLivingAreaM2 > BASE_LOAD_AREA_THRESHOLD) {
-                const excessArea = currentTotalEffectiveLivingAreaM2 - BASE_LOAD_AREA_THRESHOLD;
-                const additionalPortions = Math.ceil(excessArea / BASE_LOAD_AREA_THRESHOLD);
-                const additionalLoad = additionalPortions * ADDITIONAL_LOAD_PER_AREA_INCREMENT;
-                basicLoadLivingArea += additionalLoad;
-                basicLoadDetails += ` + ${additionalLoad}W for ${excessArea.toFixed(2)} m² excess (${additionalPortions} portion(s) of ${BASE_LOAD_AREA_THRESHOLD} m²).`;
-            }
-        }
-        stepsA.push({ label: "i) & ii) Basic Living Area Load", value: basicLoadLivingArea, details: basicLoadDetails || `Effective Living Area: ${currentTotalEffectiveLivingAreaM2.toFixed(2)} m²` });
-        totalLoadA += basicLoadLivingArea;
-
-        // Electric Space Heating Calculation (Rule 62-118)
-        const connectedHeatingW = parseFloat(totalConnectedSpaceHeatingW) || 0;
-        let currentCalculatedHeatingDemandW = 0;
-        let heatingDemandDetails = "No connected heating load or specific rule applied.";
-
-        if (connectedHeatingW > 0) {
-            if (applyRule62_118_4) {
-                currentCalculatedHeatingDemandW = connectedHeatingW; // 100% demand
-                heatingDemandDetails = `Rule 62-118 4) applied (Special System): 100% of ${connectedHeatingW.toLocaleString()}W.`;
-            } else if (applyRule62_118_3) {
-                if (connectedHeatingW <= HEATING_DEMAND_FIRST_THRESHOLD_W) {
-                    currentCalculatedHeatingDemandW = connectedHeatingW * HEATING_DEMAND_FIRST_PERCENTAGE;
-                    heatingDemandDetails = `Rule 62-118 3) applied: First 10kW (or less) at 100%. Connected: ${connectedHeatingW.toLocaleString()}W.`;
-                } else {
-                    const firstPart = HEATING_DEMAND_FIRST_THRESHOLD_W * HEATING_DEMAND_FIRST_PERCENTAGE;
-                    const balancePart = (connectedHeatingW - HEATING_DEMAND_FIRST_THRESHOLD_W) * HEATING_DEMAND_BALANCE_PERCENTAGE;
-                    currentCalculatedHeatingDemandW = firstPart + balancePart;
-                    heatingDemandDetails = `Rule 62-118 3) applied: ${HEATING_DEMAND_FIRST_THRESHOLD_W.toLocaleString()}W at 100% + ${(connectedHeatingW - HEATING_DEMAND_FIRST_THRESHOLD_W).toLocaleString()}W at 75%. Connected: ${connectedHeatingW.toLocaleString()}W.`;
-                }
-            } else {
-                // Default to 100% if no specific rule is selected by the user, or if it's non-residential / no individual thermostats
-                currentCalculatedHeatingDemandW = connectedHeatingW;
-                heatingDemandDetails = `100% of connected heating load (${connectedHeatingW.toLocaleString()}W) applied (no specific residential demand rule selected or applicable).`;
-            }
-        }
-        setCalculatedHeatingDemandW(currentCalculatedHeatingDemandW); // Update state for UI display if needed elsewhere
-        totalLoadA += currentCalculatedHeatingDemandW;
-        stepsA.push({ label: "iii) Electric Space Heating", value: currentCalculatedHeatingDemandW, details: heatingDemandDetails });
-        
-        // Air Conditioning
-        const ac = parseFloat(airConditioningLoad) || 0;
-        totalLoadA += ac;
-        stepsA.push({ label: "iii) Air Conditioning (100%)", value: ac });
-
-        // Electric Range
-        let rangeLoad = 0;
-        let rangeDetails = "No electric range provided.";
-        if (hasElectricRange) {
-            const rangeRatingWVal = parseFloat(electricRangeRatingW) || 0;
-            rangeLoad = RANGE_BASE_LOAD_WATTS; 
-            rangeDetails = `${RANGE_BASE_LOAD_WATTS}W for single range`;
-            if (rangeRatingWVal > RANGE_EXCESS_THRESHOLD_W) {
-                const excessW = rangeRatingWVal - RANGE_EXCESS_THRESHOLD_W;
-                const additionalRangeLoad = excessW * RANGE_EXCESS_PERCENTAGE;
-                rangeLoad += additionalRangeLoad; 
-                rangeDetails += ` + ${additionalRangeLoad.toFixed(0)}W (40% of ${excessW.toFixed(0)}W excess over ${RANGE_EXCESS_THRESHOLD_W}W)`;
-            }
-        }
-        totalLoadA += rangeLoad;
-        stepsA.push({ label: "iv) Electric Range Load", value: rangeLoad, details: rangeDetails });
-
-        // Other Major Loads
-        const tanklessLoad = parseFloat(tanklessWaterHeaterLoad) || 0;
-        totalLoadA += tanklessLoad;
-        stepsA.push({ label: "v) Tankless Water Heaters / Pool / Spa (100%)", value: tanklessLoad });
-
-        const evLoad = parseFloat(evSupplyEquipmentLoad) || 0;
-        totalLoadA += evLoad;
-        stepsA.push({ label: "vi) EV Supply Equipment (100%)", value: evLoad });
-
-        // Other Loads > 1500W
-        let otherLoadsTotalWatts = 0;
-        let otherLoadsCalculationDetails = "";
-        const validOtherLoadsValues = otherLoads
-            .map(l => parseFloat(l.value) || 0)
-            .filter(val => val > OTHER_LOADS_THRESHOLD_WATTS);
-
-        if (validOtherLoadsValues.length > 0) {
-            if (hasElectricRange) {
-                validOtherLoadsValues.forEach(loadValue => { 
-                    otherLoadsTotalWatts += loadValue * OTHER_LOADS_WITH_RANGE_PERCENTAGE; 
-                });
-                otherLoadsCalculationDetails = `Electric range provided. Calculated at 25% of each load > ${OTHER_LOADS_THRESHOLD_WATTS}W. Wattages considered: ${validOtherLoadsValues.join('W, ')}W.`;
-            } else {
-                const combinedOtherLoad = validOtherLoadsValues.reduce((sum, val) => sum + val, 0);
-                if (combinedOtherLoad <= OTHER_LOADS_NO_RANGE_INITIAL_THRESHOLD_WATTS) {
-                    otherLoadsTotalWatts = combinedOtherLoad * OTHER_LOADS_NO_RANGE_INITIAL_PERCENTAGE;
-                    otherLoadsCalculationDetails = `No electric range. Combined other loads (${combinedOtherLoad}W) <= ${OTHER_LOADS_NO_RANGE_INITIAL_THRESHOLD_WATTS}W. Calculated at 100%.`;
-                } else {
-                    otherLoadsTotalWatts = (OTHER_LOADS_NO_RANGE_INITIAL_THRESHOLD_WATTS * OTHER_LOADS_NO_RANGE_INITIAL_PERCENTAGE) +
-                                       ((combinedOtherLoad - OTHER_LOADS_NO_RANGE_INITIAL_THRESHOLD_WATTS) * OTHER_LOADS_NO_RANGE_EXCESS_PERCENTAGE);
-                    otherLoadsCalculationDetails = `No electric range. Combined other loads (${combinedOtherLoad}W) > ${OTHER_LOADS_NO_RANGE_INITIAL_THRESHOLD_WATTS}W. ${OTHER_LOADS_NO_RANGE_INITIAL_THRESHOLD_WATTS}W at 100% + ${(combinedOtherLoad - OTHER_LOADS_NO_RANGE_INITIAL_THRESHOLD_WATTS).toFixed(0)}W at 25%.`;
-                }
-            }
-        } else {
-            otherLoadsCalculationDetails = `No other loads > ${OTHER_LOADS_THRESHOLD_WATTS}W provided or applicable.`;
-        }
-        totalLoadA += otherLoadsTotalWatts;
-        stepsA.push({ label: `vii) Other Loads > ${OTHER_LOADS_THRESHOLD_WATTS}W`, value: otherLoadsTotalWatts, details: otherLoadsCalculationDetails });
-        
-        setCalculatedLoadA(totalLoadA);
-        setCalculationStepsA(stepsA);
-        setFinalCalculatedLoad(totalLoadA);
-
-    }, [
-        aboveGroundAreaInput, belowGroundAreaInput, areaUnit,
-        totalConnectedSpaceHeatingW, applyRule62_118_3, applyRule62_118_4, // New heating states
-        airConditioningLoad,
-        hasElectricRange, electricRangeRatingW,
-        tanklessWaterHeaterLoad, evSupplyEquipmentLoad,
-        otherLoads,
-    ]);
-
-    useEffect(() => {
-        calculateLoad();
-    }, [calculateLoad]);
-
-    // Effect to update calculatedHeatingDemandW for display purposes when inputs change
-    useEffect(() => {
-        const connectedHeatingW = parseFloat(totalConnectedSpaceHeatingW) || 0;
-        let currentCalculatedHeatingDemandW = 0;
-        if (connectedHeatingW > 0) {
-            if (applyRule62_118_4) {
-                currentCalculatedHeatingDemandW = connectedHeatingW;
-            } else if (applyRule62_118_3) {
-                if (connectedHeatingW <= HEATING_DEMAND_FIRST_THRESHOLD_W) {
-                    currentCalculatedHeatingDemandW = connectedHeatingW * HEATING_DEMAND_FIRST_PERCENTAGE;
-                } else {
-                    const firstPart = HEATING_DEMAND_FIRST_THRESHOLD_W * HEATING_DEMAND_FIRST_PERCENTAGE;
-                    const balancePart = (connectedHeatingW - HEATING_DEMAND_FIRST_THRESHOLD_W) * HEATING_DEMAND_BALANCE_PERCENTAGE;
-                    currentCalculatedHeatingDemandW = firstPart + balancePart;
-                }
-            } else {
-                currentCalculatedHeatingDemandW = connectedHeatingW;
-            }
-        }
-        setCalculatedHeatingDemandW(currentCalculatedHeatingDemandW);
-    }, [totalConnectedSpaceHeatingW, applyRule62_118_3, applyRule62_118_4]);
-
-
-    return (
-        <div className="min-h-screen bg-gray-900 text-white p-4 sm:p-8 font-sans">
-            <div className="max-w-4xl mx-auto">
-                <header className="mb-8 text-center">
-                    <h1 className="text-3xl sm:text-4xl font-bold text-indigo-400">CEC 2024 Load Calculator</h1>
-                    <p className="text-lg text-gray-400">Single Dwelling (Rule 8-200 1)a) Only)</p>
-                     <p className="text-xs text-gray-500 mt-2">
-                        Note: This calculator is for estimation purposes only based on CEC 2024 Rule 8-200 1)a), 8-110 & 62-118.
-                        Rule 8-200 1)b) is not included in this version.
-                        Always consult the official Canadian Electrical Code and a qualified professional for accurate calculations and installations.
-                    </p>
-                </header>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                    {/* --- Input Section --- */}
-                    <div className="bg-gray-800 p-6 rounded-lg shadow-xl">
-                        <h2 className="text-2xl font-semibold mb-6 text-indigo-300 border-b border-gray-700 pb-2">Input Values</h2>
-
-                        <fieldset className="mb-6 border border-gray-700 p-4 rounded-md">
-                            <legend className="text-lg font-medium text-indigo-400 px-2">1. Living Area (Rule 8-110)</legend>
-                            <p className="text-xs text-gray-400 mb-1">a) 100% of area on ground floor & areas above ground floor used for living.</p>
-                            <InputField label="Above-Ground Living Area" value={aboveGroundAreaInput} onChange={handleAboveGroundAreaInputChange} placeholder="e.g., 1076" />
-                            <p className="text-xs text-gray-400 mb-1 mt-3">c) 75% of areas below ground {'>'}1.8m height.</p>
-                            <InputField label="Below-Ground Living Area (Portion >1.8m height)" value={belowGroundAreaInput} onChange={handleBelowGroundAreaInputChange} placeholder="e.g., 538" />
-                            <div className="flex items-center mt-2">
-                                <label className="text-sm font-medium text-gray-300 mr-2">Unit for areas:</label>
-                                <select value={areaUnit} onChange={handleAreaUnitChange} className="h-10 block px-3 py-2 bg-gray-700 border border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-white">
-                                    <option value="sqft">ft²</option>
-                                    <option value="sqm">m²</option>
-                                </select>
-                            </div>
-                            {totalEffectiveLivingAreaM2 > 0 && <p className="text-xs text-gray-400 mt-2 p-2 bg-gray-750 rounded-md">Total Effective Living Area: {totalEffectiveLivingAreaM2.toFixed(2)} m²</p>}
-                        </fieldset>
-                        
-                        <fieldset className="mb-6 border border-gray-700 p-4 rounded-md">
-                            <legend className="text-lg font-medium text-indigo-400 px-2">2. Electric Space Heating & Cooling</legend>
-                            <InputField 
-                                label="Total Connected Electric Space Heating Load (W)" 
-                                value={totalConnectedSpaceHeatingW} 
-                                onChange={(e) => setTotalConnectedSpaceHeatingW(e.target.value)} 
-                                unit="W" 
-                                placeholder="e.g., 15000" 
-                            />
-                            <div className="mb-3 mt-1 space-y-2">
-                                <div className="flex items-center">
-                                    <input 
-                                        type="checkbox" 
-                                        id="applyRule62_118_3" 
-                                        checked={applyRule62_118_3} 
-                                        onChange={(e) => setApplyRule62_118_3(e.target.checked)}
-                                        disabled={applyRule62_118_4} // Disable if Rule 4 is checked
-                                        className="h-4 w-4 text-indigo-600 border-gray-600 bg-gray-700 rounded focus:ring-indigo-500"
-                                    />
-                                    <label htmlFor="applyRule62_118_3" className="ml-2 text-sm text-gray-300">
-                                        Residential w/ individual thermostatic controls (Rule 62-118 3))?
-                                    </label>
-                                </div>
-                                <div className="flex items-center">
-                                    <input 
-                                        type="checkbox" 
-                                        id="applyRule62_118_4" 
-                                        checked={applyRule62_118_4} 
-                                        onChange={(e) => setApplyRule62_118_4(e.target.checked)}
-                                        className="h-4 w-4 text-indigo-600 border-gray-600 bg-gray-700 rounded focus:ring-indigo-500"
-                                    />
-                                    <label htmlFor="applyRule62_118_4" className="ml-2 text-sm text-gray-300">
-                                        System is electric thermal storage, duct heater, or furnace (Rule 62-118 4))?
-                                    </label>
-                                </div>
-                            </div>
-                             {parseFloat(totalConnectedSpaceHeatingW) > 0 && (
-                                <p className="text-sm text-gray-400 mt-1 p-2 bg-gray-750 rounded-md">
-                                    Calculated Heating Load (after demand): <span className="font-semibold text-indigo-300">{calculatedHeatingDemandW.toLocaleString()} W</span>
-                                </p>
-                            )}
-
-                            <InputField 
-                                label="Air Conditioning Load (W)" 
-                                value={airConditioningLoad} 
-                                onChange={(e) => setAirConditioningLoad(e.target.value)} 
-                                unit="W" 
-                                placeholder="100% of AC load" 
-                                className="mt-6" // Add margin top for separation
-                            />
-                        </fieldset>
-
-                        <fieldset className="mb-6 border border-gray-700 p-4 rounded-md">
-                            <legend className="text-lg font-medium text-indigo-400 px-2">3. Electric Range</legend>
-                            <div className="flex items-center mb-3">
-                                <input type="checkbox" id="hasElectricRange" checked={hasElectricRange} onChange={(e) => setHasElectricRange(e.target.checked)} className="h-4 w-4 text-indigo-600 border-gray-600 bg-gray-700 rounded focus:ring-indigo-500" />
-                                <label htmlFor="hasElectricRange" className="ml-2 text-sm text-gray-300">Electric Range Provided?</label>
-                            </div>
-                            {hasElectricRange && <InputField label="Electric Range Rating (W)" value={electricRangeRatingW} onChange={(e) => setElectricRangeRatingW(e.target.value)} unit="W" placeholder="e.g., 13000" />}
-                        </fieldset>
-
-                        <fieldset className="mb-6 border border-gray-700 p-4 rounded-md">
-                            <legend className="text-lg font-medium text-indigo-400 px-2">4. Other Major Loads (100% Demand)</legend>
-                            <InputField label="Tankless Water Heaters / Pool / Spa (W)" value={tanklessWaterHeaterLoad} onChange={(e) => setTanklessWaterHeaterLoad(e.target.value)} unit="W" />
-                            <InputField label="EV Supply Equipment (EVSE) (W)" value={evSupplyEquipmentLoad} onChange={(e) => setEvSupplyEquipmentLoad(e.target.value)} unit="W" />
-                        </fieldset>
-
-                        <fieldset className="mb-6 border border-gray-700 p-4 rounded-md">
-                            <legend className="text-lg font-medium text-indigo-400 px-2">5. Other Loads (each {'>'} 1500W)</legend>
-                            <p className="text-xs text-gray-400 mb-3">Individual loads {'>'}1500W not covered above.</p>
-                            {otherLoads.map((load, index) => (
-                                <div key={load.id} className="grid grid-cols-1 sm:grid-cols-3 gap-x-2 items-end mb-2">
-                                    <InputField
-                                        label={`Load ${index + 1} Name`}
-                                        type="text"
-                                        value={load.name}
-                                        onChange={(e) => handleOtherLoadChange(load.id, 'name', e.target.value)}
-                                        placeholder="e.g., Clothes Dryer, Welder"
-                                        className="sm:col-span-2"
-                                    />
-                                    <InputField
-                                        label={`Value (W)`}
-                                        value={load.value}
-                                        onChange={(e) => handleOtherLoadChange(load.id, 'value', e.target.value)}
-                                        unit="W"
-                                        placeholder="e.g., 5000"
-                                        className="sm:col-span-1"
-                                    />
-                                    {otherLoads.length > 0 && ( 
-                                        <button
-                                            onClick={() => removeOtherLoad(load.id)}
-                                            className="ml-auto sm:ml-0 p-2 bg-red-600 hover:bg-red-700 text-white rounded-md text-xs h-10 mt-1 sm:mt-7" 
-                                        >
-                                            Remove
-                                        </button>
-                                    )}
-                                </div>
-                            ))}
-                            <button onClick={addOtherLoad} className="mt-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-md text-sm">Add Another Load</button>
-                        </fieldset>
-                    </div>
-
-                    {/* --- Results Section --- */}
-                    <div className="bg-gray-800 p-6 rounded-lg shadow-xl">
-                        <h2 className="text-2xl font-semibold mb-6 text-indigo-300 border-b border-gray-700 pb-2">Calculation Results</h2>
-                        
-                        <div className="mb-6">
-                            <h3 className="text-xl font-semibold mb-3 text-indigo-400">Rule 8-200 1) a) Calculation Details:</h3>
-                            {calculationStepsA.map((step, index) => <CalculationStep key={`a-${index}`} label={step.label} value={step.value} details={step.details} />)}
-                            <div className="mt-4 p-3 bg-gray-700 rounded-md shadow">
-                                <div className="flex justify-between items-center">
-                                    <span className="text-lg font-semibold text-gray-200">Total for Rule 1) a):</span>
-                                    <span className="text-xl font-bold text-green-400">{calculatedLoadA.toLocaleString()} W</span>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <div className="mt-8 p-6 bg-indigo-600 rounded-lg shadow-2xl mb-8">
-                            <h3 className="text-2xl font-bold mb-2 text-white text-center">Final Calculated Load</h3>
-                            <p className="text-sm text-indigo-200 mb-4 text-center">(Based on Rule 8-200 1)a) Only)</p>
-                            <p className="text-4xl font-extrabold text-yellow-300 text-center">{finalCalculatedLoad.toLocaleString()} W</p>
-                            <p className="text-2xl font-bold text-yellow-200 text-center mt-1">({(finalCalculatedLoad / 1000).toFixed(2)} kW)</p>
-                            <p className="text-xl font-bold text-yellow-100 text-center mt-1">({(finalCalculatedLoad / VOLTAGE_FOR_AMPS).toFixed(2)} A @ {VOLTAGE_FOR_AMPS}V)</p>
-                        </div>
-                    </div>
-                </div>
-                 <footer className="mt-12 text-center text-sm text-gray-500">
-                    <p>&copy; {new Date().getFullYear()} CEC Load Calculator. For estimation purposes only.</p>
-                    <p>Refer to the official Canadian Electrical Code 2024 and qualified professionals.</p>
-                </footer>
-            </div>
-        </div>
-    );
-}
-
-export default App;
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+<html>
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+  <meta http-equiv="Content-Style-Type" content="text/css">
+  <title></title>
+  <meta name="Generator" content="Cocoa HTML Writer">
+  <meta name="CocoaVersion" content="2575.6">
+  <style type="text/css">
+    p.p1 {margin: 0.0px 0.0px 0.0px 0.0px; font: 12.0px Times; -webkit-text-stroke: #000000}
+    p.p2 {margin: 0.0px 0.0px 0.0px 0.0px; font: 12.0px Times; -webkit-text-stroke: #000000; min-height: 14.0px}
+    span.s1 {font-kerning: none}
+  </style>
+</head>
+<body>
+<p class="p1"><span class="s1">&lt;!DOCTYPE html&gt;</span></p>
+<p class="p1"><span class="s1">&lt;html lang="en"&gt;</span></p>
+<p class="p1"><span class="s1">&lt;head&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>&lt;meta charset="UTF-8"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>&lt;meta name="viewport" content="width=device-width, initial-scale=1.0"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>&lt;title&gt;CEC 2024 Load Calculator (JS - Rule 1a Only)&lt;/title&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>&lt;script src="https://cdn.tailwindcss.com"&gt;&lt;/script&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>&lt;style&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>body {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>font-family: 'Inter', sans-serif; /* Using a common sans-serif font as Inter might not be default */</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>/* Custom scrollbar for better aesthetics in dark mode */</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>::-webkit-scrollbar {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>width: 8px;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>::-webkit-scrollbar-track {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>background: #1f2937; /* gray-800 */</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>::-webkit-scrollbar-thumb {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>background: #4f46e5; /* indigo-600 */</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>border-radius: 4px;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>::-webkit-scrollbar-thumb:hover {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>background: #4338ca; /* indigo-700 */</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>.calculation-step-details {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>font-size: 0.75rem; /* text-xs */</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>color: #9ca3af; /* gray-400 */</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>margin-top: 0.25rem; /* mt-1 */</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>&lt;/style&gt;</span></p>
+<p class="p1"><span class="s1">&lt;/head&gt;</span></p>
+<p class="p1"><span class="s1">&lt;body class="min-h-screen bg-gray-900 text-white p-4 sm:p-8"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>&lt;div class="max-w-4xl mx-auto"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>&lt;header class="mb-8 text-center"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>&lt;h1 class="text-3xl sm:text-4xl font-bold text-indigo-400"&gt;CEC 2024 Load Calculator&lt;/h1&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>&lt;p class="text-lg text-gray-400"&gt;Single Dwelling (Rule 8-200 1)a) Only)&lt;/p&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>&lt;p class="text-xs text-gray-500 mt-2"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>Note: This calculator is for estimation purposes only based on CEC 2024 Rule 8-200 1)a), 8-110 &amp; 62-118.</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>Rule 8-200 1)b) is not included in this version.</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>Always consult the official Canadian Electrical Code and a qualified professional for accurate calculations and installations.</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>&lt;/p&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>&lt;/header&gt;</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>&lt;div class="grid grid-cols-1 md:grid-cols-2 gap-8"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>&lt;div class="bg-gray-800 p-6 rounded-lg shadow-xl"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>&lt;h2 class="text-2xl font-semibold mb-6 text-indigo-300 border-b border-gray-700 pb-2"&gt;Input Values&lt;/h2&gt;</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>&lt;fieldset class="mb-6 border border-gray-700 p-4 rounded-md"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;legend class="text-lg font-medium text-indigo-400 px-2"&gt;1. Living Area (Rule 8-110)&lt;/legend&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;p class="text-xs text-gray-400 mb-1"&gt;a) 100% of area on ground floor &amp; areas above ground floor used for living.&lt;/p&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;div class="mb-4"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;label for="aboveGroundAreaInput" class="block text-sm font-medium text-gray-300 mb-1"&gt;Above-Ground Living Area&lt;/label&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;input type="number" id="aboveGroundAreaInput" placeholder="e.g., 1076" class="mt-1 block w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-white"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;/div&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;p class="text-xs text-gray-400 mb-1 mt-3"&gt;c) 75% of areas below ground &amp;gt;1.8m height.&lt;/p&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                     </span>&lt;div class="mb-4"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;label for="belowGroundAreaInput" class="block text-sm font-medium text-gray-300 mb-1"&gt;Below-Ground Living Area (Portion &amp;gt;1.8m height)&lt;/label&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;input type="number" id="belowGroundAreaInput" placeholder="e.g., 538" class="mt-1 block w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-white"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;/div&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;div class="flex items-center mt-2"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;label class="text-sm font-medium text-gray-300 mr-2"&gt;Unit for areas:&lt;/label&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;select id="areaUnit" class="h-10 block px-3 py-2 bg-gray-700 border border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-white"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                            </span>&lt;option value="sqft"&gt;ft²&lt;/option&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                            </span>&lt;option value="sqm"&gt;m²&lt;/option&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;/select&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;/div&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;p id="totalEffectiveLivingAreaM2Display" class="text-xs text-gray-400 mt-2 p-2 bg-gray-750 rounded-md hidden"&gt;Total Effective Living Area: 0.00 m²&lt;/p&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>&lt;/fieldset&gt;</span></p>
+<p class="p2"><span class="s1"><span class="Apple-converted-space">                </span></span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>&lt;fieldset class="mb-6 border border-gray-700 p-4 rounded-md"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;legend class="text-lg font-medium text-indigo-400 px-2"&gt;2. Electric Space Heating &amp; Cooling&lt;/legend&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;div class="mb-4"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;label for="totalConnectedSpaceHeatingW" class="block text-sm font-medium text-gray-300 mb-1"&gt;Total Connected Electric Space Heating Load (W)&lt;/label&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;div class="flex items-center"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                            </span>&lt;input type="number" id="totalConnectedSpaceHeatingW" placeholder="e.g., 15000" class="mt-1 block w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-white"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                            </span>&lt;span class="ml-2 text-gray-400"&gt;W&lt;/span&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;/div&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;/div&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;div class="mb-3 mt-1 space-y-2"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;div class="flex items-center"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                            </span>&lt;input type="checkbox" id="applyRule62_118_3" class="h-4 w-4 text-indigo-600 border-gray-600 bg-gray-700 rounded focus:ring-indigo-500"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                            </span>&lt;label for="applyRule62_118_3" class="ml-2 text-sm text-gray-300"&gt;Residential w/ individual thermostatic controls (Rule 62-118 3))?&lt;/label&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;/div&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;div class="flex items-center"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                            </span>&lt;input type="checkbox" id="applyRule62_118_4" class="h-4 w-4 text-indigo-600 border-gray-600 bg-gray-700 rounded focus:ring-indigo-500"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                            </span>&lt;label for="applyRule62_118_4" class="ml-2 text-sm text-gray-300"&gt;System is electric thermal storage, duct heater, or furnace (Rule 62-118 4))?&lt;/label&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;/div&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;/div&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;p id="calculatedHeatingDemandWDisplay" class="text-sm text-gray-400 mt-1 p-2 bg-gray-750 rounded-md hidden"&gt;Calculated Heating Load (after demand): &lt;span class="font-semibold text-indigo-300"&gt;0 W&lt;/span&gt;&lt;/p&gt;</span></p>
+<p class="p2"><span class="s1"><span class="Apple-converted-space">                    </span></span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;div class="mb-4 mt-6"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;label for="airConditioningLoad" class="block text-sm font-medium text-gray-300 mb-1"&gt;Air Conditioning Load (W)&lt;/label&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                         </span>&lt;div class="flex items-center"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                            </span>&lt;input type="number" id="airConditioningLoad" placeholder="100% of AC load" class="mt-1 block w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-white"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                            </span>&lt;span class="ml-2 text-gray-400"&gt;W&lt;/span&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;/div&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;/div&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>&lt;/fieldset&gt;</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>&lt;fieldset class="mb-6 border border-gray-700 p-4 rounded-md"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;legend class="text-lg font-medium text-indigo-400 px-2"&gt;3. Electric Range&lt;/legend&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;div class="flex items-center mb-3"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;input type="checkbox" id="hasElectricRange" checked class="h-4 w-4 text-indigo-600 border-gray-600 bg-gray-700 rounded focus:ring-indigo-500"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;label for="hasElectricRange" class="ml-2 text-sm text-gray-300"&gt;Electric Range Provided?&lt;/label&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;/div&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;div id="electricRangeRatingContainer" class="mb-4"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;label for="electricRangeRatingW" class="block text-sm font-medium text-gray-300 mb-1"&gt;Electric Range Rating (W)&lt;/label&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;div class="flex items-center"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                            </span>&lt;input type="number" id="electricRangeRatingW" value="6000" placeholder="e.g., 13000" class="mt-1 block w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-white"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                            </span>&lt;span class="ml-2 text-gray-400"&gt;W&lt;/span&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;/div&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;/div&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>&lt;/fieldset&gt;</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>&lt;fieldset class="mb-6 border border-gray-700 p-4 rounded-md"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;legend class="text-lg font-medium text-indigo-400 px-2"&gt;4. Other Major Loads (100% Demand)&lt;/legend&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;div class="mb-4"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;label for="tanklessWaterHeaterLoad" class="block text-sm font-medium text-gray-300 mb-1"&gt;Tankless Water Heaters / Pool / Spa (W)&lt;/label&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;div class="flex items-center"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                            </span>&lt;input type="number" id="tanklessWaterHeaterLoad" class="mt-1 block w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-white"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                            </span>&lt;span class="ml-2 text-gray-400"&gt;W&lt;/span&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;/div&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;/div&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                     </span>&lt;div class="mb-4"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;label for="evSupplyEquipmentLoad" class="block text-sm font-medium text-gray-300 mb-1"&gt;EV Supply Equipment (EVSE) (W)&lt;/label&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;div class="flex items-center"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                            </span>&lt;input type="number" id="evSupplyEquipmentLoad" class="mt-1 block w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-white"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                            </span>&lt;span class="ml-2 text-gray-400"&gt;W&lt;/span&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;/div&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;/div&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>&lt;/fieldset&gt;</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>&lt;fieldset class="mb-6 border border-gray-700 p-4 rounded-md"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;legend class="text-lg font-medium text-indigo-400 px-2"&gt;5. Other Loads (each &amp;gt; 1500W)&lt;/legend&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;p class="text-xs text-gray-400 mb-3"&gt;Individual loads &amp;gt;1500W not covered above.&lt;/p&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;div id="otherLoadsContainer"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;/div&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;button id="addOtherLoadButton" class="mt-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-md text-sm"&gt;Add Another Load&lt;/button&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>&lt;/fieldset&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>&lt;/div&gt;</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>&lt;div class="bg-gray-800 p-6 rounded-lg shadow-xl"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>&lt;h2 class="text-2xl font-semibold mb-6 text-indigo-300 border-b border-gray-700 pb-2"&gt;Calculation Results&lt;/h2&gt;</span></p>
+<p class="p2"><span class="s1"><span class="Apple-converted-space">                </span></span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>&lt;div class="mb-6"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;h3 class="text-xl font-semibold mb-3 text-indigo-400"&gt;Rule 8-200 1) a) Calculation Details:&lt;/h3&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;div id="calculationStepsAContainer"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;/div&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;div class="mt-4 p-3 bg-gray-700 rounded-md shadow"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;div class="flex justify-between items-center"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                            </span>&lt;span class="text-lg font-semibold text-gray-200"&gt;Total for Rule 1) a):&lt;/span&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                            </span>&lt;span id="calculatedLoadADisplay" class="text-xl font-bold text-green-400"&gt;0 W&lt;/span&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>&lt;/div&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;/div&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>&lt;/div&gt;</span></p>
+<p class="p2"><span class="s1"><span class="Apple-converted-space">                </span></span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>&lt;div class="mt-8 p-6 bg-indigo-600 rounded-lg shadow-2xl mb-8"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;h3 class="text-2xl font-bold mb-2 text-white text-center"&gt;Final Calculated Load&lt;/h3&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;p class="text-sm text-indigo-200 mb-4 text-center"&gt;(Based on Rule 8-200 1)a) Only)&lt;/p&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;p id="finalCalculatedLoadW" class="text-4xl font-extrabold text-yellow-300 text-center"&gt;0 W&lt;/p&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;p id="finalCalculatedLoadKW" class="text-2xl font-bold text-yellow-200 text-center mt-1"&gt;(0.00 kW)&lt;/p&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>&lt;p id="finalCalculatedLoadAmps" class="text-xl font-bold text-yellow-100 text-center mt-1"&gt;(0.00 A @ 240V)&lt;/p&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>&lt;/div&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>&lt;/div&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>&lt;/div&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">         </span>&lt;footer class="mt-12 text-center text-sm text-gray-500"&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>&lt;p&gt;&amp;copy; &lt;span id="currentYear"&gt;&lt;/span&gt; CEC Load Calculator. For estimation purposes only.&lt;/p&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>&lt;p&gt;Refer to the official Canadian Electrical Code 2024 and qualified professionals.&lt;/p&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>&lt;/footer&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>&lt;/div&gt;</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">&lt;script&gt;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>// Constants for CEC calculations</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const SQFT_TO_SQM_CONVERSION = 0.092903;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const BASE_LOAD_AREA_THRESHOLD = 90; // m²</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const BASE_LOAD_INITIAL_WATTS = 5000; // W</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const ADDITIONAL_LOAD_PER_AREA_INCREMENT = 1000; // W per 90m² or portion</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const RANGE_BASE_LOAD_WATTS = 6000; // W</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const RANGE_EXCESS_THRESHOLD_W = 12000; // Watts</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const RANGE_EXCESS_PERCENTAGE = 0.40; // 40%</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const OTHER_LOADS_THRESHOLD_WATTS = 1500; // W</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const OTHER_LOADS_NO_RANGE_INITIAL_THRESHOLD_WATTS = 6000; // W</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const OTHER_LOADS_NO_RANGE_INITIAL_PERCENTAGE = 1.00; // 100%</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const OTHER_LOADS_NO_RANGE_EXCESS_PERCENTAGE = 0.25; // 25%</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const OTHER_LOADS_WITH_RANGE_PERCENTAGE = 0.25; // 25%</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const VOLTAGE_FOR_AMPS = 240; // Volts</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>// Constants for Rule 62-118</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const HEATING_DEMAND_FIRST_THRESHOLD_KW = 10; // kW</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const HEATING_DEMAND_FIRST_THRESHOLD_W = HEATING_DEMAND_FIRST_THRESHOLD_KW * 1000; // Watts</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const HEATING_DEMAND_FIRST_PERCENTAGE = 1.00; // 100%</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const HEATING_DEMAND_BALANCE_PERCENTAGE = 0.75; // 75%</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>// DOM Elements</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const aboveGroundAreaInputEl = document.getElementById('aboveGroundAreaInput');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const belowGroundAreaInputEl = document.getElementById('belowGroundAreaInput');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const areaUnitEl = document.getElementById('areaUnit');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const totalEffectiveLivingAreaM2DisplayEl = document.getElementById('totalEffectiveLivingAreaM2Display');</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const totalConnectedSpaceHeatingWEl = document.getElementById('totalConnectedSpaceHeatingW');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const applyRule62_118_3El = document.getElementById('applyRule62_118_3');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const applyRule62_118_4El = document.getElementById('applyRule62_118_4');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const calculatedHeatingDemandWDisplayEl = document.getElementById('calculatedHeatingDemandWDisplay');</span></p>
+<p class="p2"><span class="s1"><span class="Apple-converted-space">    </span></span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const airConditioningLoadEl = document.getElementById('airConditioningLoad');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const hasElectricRangeEl = document.getElementById('hasElectricRange');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const electricRangeRatingContainerEl = document.getElementById('electricRangeRatingContainer');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const electricRangeRatingWEl = document.getElementById('electricRangeRatingW');</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const tanklessWaterHeaterLoadEl = document.getElementById('tanklessWaterHeaterLoad');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const evSupplyEquipmentLoadEl = document.getElementById('evSupplyEquipmentLoad');</span></p>
+<p class="p2"><span class="s1"><span class="Apple-converted-space">    </span></span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const otherLoadsContainerEl = document.getElementById('otherLoadsContainer');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const addOtherLoadButtonEl = document.getElementById('addOtherLoadButton');</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const calculationStepsAContainerEl = document.getElementById('calculationStepsAContainer');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const calculatedLoadADisplayEl = document.getElementById('calculatedLoadADisplay');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const finalCalculatedLoadWEl = document.getElementById('finalCalculatedLoadW');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const finalCalculatedLoadKWEl = document.getElementById('finalCalculatedLoadKW');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const finalCalculatedLoadAmpsEl = document.getElementById('finalCalculatedLoadAmps');</span></p>
+<p class="p2"><span class="s1"><span class="Apple-converted-space">    </span></span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>document.getElementById('currentYear').textContent = new Date().getFullYear();</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>let otherLoadCount = 0;</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>function createOtherLoadEntry() {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>otherLoadCount++;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>const entryDiv = document.createElement('div');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>entryDiv.className = 'grid grid-cols-1 sm:grid-cols-3 gap-x-2 items-end mb-2 other-load-entry';</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>entryDiv.id = `otherLoadEntry-${otherLoadCount}`;</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>// Name Input</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>const nameDiv = document.createElement('div');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>nameDiv.className = 'mb-4 sm:col-span-2';</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>const nameLabel = document.createElement('label');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>nameLabel.className = 'block text-sm font-medium text-gray-300 mb-1';</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>nameLabel.textContent = `Load ${otherLoadCount} Name`;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>const nameInput = document.createElement('input');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>nameInput.type = 'text';</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>nameInput.placeholder = 'e.g., Clothes Dryer, Welder';</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>nameInput.className = 'other-load-name mt-1 block w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-white';</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>nameDiv.appendChild(nameLabel);</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>nameDiv.appendChild(nameInput);</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>// Value Input</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>const valueDiv = document.createElement('div');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>valueDiv.className = 'mb-4 sm:col-span-1';</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>const valueLabel = document.createElement('label');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>valueLabel.className = 'block text-sm font-medium text-gray-300 mb-1';</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>valueLabel.textContent = `Value (W)`;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>const valueInputDiv = document.createElement('div');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>valueInputDiv.className = 'flex items-center';</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>const valueInput = document.createElement('input');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>valueInput.type = 'number';</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>valueInput.placeholder = 'e.g., 5000';</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>valueInput.className = 'other-load-value mt-1 block w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-white';</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>const valueUnit = document.createElement('span');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>valueUnit.className = 'ml-2 text-gray-400';</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>valueUnit.textContent = 'W';</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>valueInputDiv.appendChild(valueInput);</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>valueInputDiv.appendChild(valueUnit);</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>valueDiv.appendChild(valueLabel);</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>valueDiv.appendChild(valueInputDiv);</span></p>
+<p class="p2"><span class="s1"><span class="Apple-converted-space">        </span></span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>// Remove Button</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>const removeButton = document.createElement('button');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>removeButton.textContent = 'Remove';</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>removeButton.className = 'ml-auto sm:ml-0 p-2 bg-red-600 hover:bg-red-700 text-white rounded-md text-xs h-10 mt-1 sm:mt-7';</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>removeButton.onclick = function() {<span class="Apple-converted-space"> </span></span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>entryDiv.remove();</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>calculateLoad(); // Recalculate when a load is removed</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>};</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>entryDiv.appendChild(nameDiv);</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>entryDiv.appendChild(valueDiv);</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>entryDiv.appendChild(removeButton);</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>otherLoadsContainerEl.appendChild(entryDiv);</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>// Add event listeners to new inputs</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>nameInput.addEventListener('input', calculateLoad);</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>valueInput.addEventListener('input', calculateLoad);</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>}</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>function calculateLoad() {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>const stepsA = [];</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>let totalLoadA = 0;</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>// 1. Living Area Calculation</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>let inputAboveM2 = parseFloat(aboveGroundAreaInputEl.value) || 0;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>let inputBelowM2 = parseFloat(belowGroundAreaInputEl.value) || 0;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>if (areaUnitEl.value === 'sqft') {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>inputAboveM2 *= SQFT_TO_SQM_CONVERSION;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>inputBelowM2 *= SQFT_TO_SQM_CONVERSION;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>const effectiveAboveGroundM2 = inputAboveM2;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>const effectiveBelowGroundM2 = inputBelowM2 * 0.75;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>const currentTotalEffectiveLivingAreaM2 = effectiveAboveGroundM2 + effectiveBelowGroundM2;</span></p>
+<p class="p2"><span class="s1"><span class="Apple-converted-space">        </span></span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>if (currentTotalEffectiveLivingAreaM2 &gt; 0) {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>totalEffectiveLivingAreaM2DisplayEl.textContent = `Total Effective Living Area: ${currentTotalEffectiveLivingAreaM2.toFixed(2)} m²`;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>totalEffectiveLivingAreaM2DisplayEl.classList.remove('hidden');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>} else {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>totalEffectiveLivingAreaM2DisplayEl.classList.add('hidden');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>}</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>let basicLoadLivingArea = 0;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>let basicLoadDetails = "";</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>if (currentTotalEffectiveLivingAreaM2 &gt; 0) {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>basicLoadLivingArea = BASE_LOAD_INITIAL_WATTS;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>basicLoadDetails = `${BASE_LOAD_INITIAL_WATTS}W for first ${Math.min(currentTotalEffectiveLivingAreaM2, BASE_LOAD_AREA_THRESHOLD).toFixed(2)} m² of effective living area.`;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>if (currentTotalEffectiveLivingAreaM2 &gt; BASE_LOAD_AREA_THRESHOLD) {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>const excessArea = currentTotalEffectiveLivingAreaM2 - BASE_LOAD_AREA_THRESHOLD;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>const additionalPortions = Math.ceil(excessArea / BASE_LOAD_AREA_THRESHOLD);</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>const additionalLoad = additionalPortions * ADDITIONAL_LOAD_PER_AREA_INCREMENT;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>basicLoadLivingArea += additionalLoad;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>basicLoadDetails += ` + ${additionalLoad}W for ${excessArea.toFixed(2)} m² excess (${additionalPortions} portion(s) of ${BASE_LOAD_AREA_THRESHOLD} m²).`;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>stepsA.push({ label: "i) &amp; ii) Basic Living Area Load", value: basicLoadLivingArea, details: basicLoadDetails || `Effective Living Area: ${currentTotalEffectiveLivingAreaM2.toFixed(2)} m²` });</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>totalLoadA += basicLoadLivingArea;</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>// 2. Electric Space Heating Calculation (Rule 62-118)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>const connectedHeatingW = parseFloat(totalConnectedSpaceHeatingWEl.value) || 0;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>let currentCalculatedHeatingDemandW = 0;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>let heatingDemandDetails = "No connected heating load or specific rule applied.";</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>if (connectedHeatingW &gt; 0) {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>if (applyRule62_118_4El.checked) {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>currentCalculatedHeatingDemandW = connectedHeatingW;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>heatingDemandDetails = `Rule 62-118 4) applied (Special System): 100% of ${connectedHeatingW.toLocaleString()}W.`;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>} else if (applyRule62_118_3El.checked) {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>if (connectedHeatingW &lt;= HEATING_DEMAND_FIRST_THRESHOLD_W) {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>currentCalculatedHeatingDemandW = connectedHeatingW * HEATING_DEMAND_FIRST_PERCENTAGE;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>heatingDemandDetails = `Rule 62-118 3) applied: First 10kW (or less) at 100%. Connected: ${connectedHeatingW.toLocaleString()}W.`;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>} else {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>const firstPart = HEATING_DEMAND_FIRST_THRESHOLD_W * HEATING_DEMAND_FIRST_PERCENTAGE;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>const balancePart = (connectedHeatingW - HEATING_DEMAND_FIRST_THRESHOLD_W) * HEATING_DEMAND_BALANCE_PERCENTAGE;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>currentCalculatedHeatingDemandW = firstPart + balancePart;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>heatingDemandDetails = `Rule 62-118 3) applied: ${HEATING_DEMAND_FIRST_THRESHOLD_W.toLocaleString()}W at 100% + ${(connectedHeatingW - HEATING_DEMAND_FIRST_THRESHOLD_W).toLocaleString()}W at 75%. Connected: ${connectedHeatingW.toLocaleString()}W.`;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>} else {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>currentCalculatedHeatingDemandW = connectedHeatingW;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>heatingDemandDetails = `100% of connected heating load (${connectedHeatingW.toLocaleString()}W) applied (no specific residential demand rule selected or applicable).`;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>calculatedHeatingDemandWDisplayEl.querySelector('span').textContent = `${currentCalculatedHeatingDemandW.toLocaleString()} W`;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>calculatedHeatingDemandWDisplayEl.classList.remove('hidden');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>} else {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>calculatedHeatingDemandWDisplayEl.classList.add('hidden');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>totalLoadA += currentCalculatedHeatingDemandW;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>stepsA.push({ label: "iii) Electric Space Heating", value: currentCalculatedHeatingDemandW, details: heatingDemandDetails });</span></p>
+<p class="p2"><span class="s1"><span class="Apple-converted-space">        </span></span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>// 3. Air Conditioning</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>const ac = parseFloat(airConditioningLoadEl.value) || 0;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>totalLoadA += ac;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>stepsA.push({ label: "iii) Air Conditioning (100%)", value: ac });</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>// 4. Electric Range</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>let rangeLoad = 0;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>let rangeDetails = "No electric range provided.";</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>if (hasElectricRangeEl.checked) {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>electricRangeRatingContainerEl.style.display = 'block';</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>const rangeRatingWVal = parseFloat(electricRangeRatingWEl.value) || 0;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>rangeLoad = RANGE_BASE_LOAD_WATTS;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>rangeDetails = `${RANGE_BASE_LOAD_WATTS}W for single range`;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>if (rangeRatingWVal &gt; RANGE_EXCESS_THRESHOLD_W) {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>const excessW = rangeRatingWVal - RANGE_EXCESS_THRESHOLD_W;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>const additionalRangeLoad = excessW * RANGE_EXCESS_PERCENTAGE;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>rangeLoad += additionalRangeLoad;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>rangeDetails += ` + ${additionalRangeLoad.toFixed(0)}W (40% of ${excessW.toFixed(0)}W excess over ${RANGE_EXCESS_THRESHOLD_W}W)`;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>} else {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>electricRangeRatingContainerEl.style.display = 'none';</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>totalLoadA += rangeLoad;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>stepsA.push({ label: "iv) Electric Range Load", value: rangeLoad, details: rangeDetails });</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>// 5. Tankless Water Heaters / Pool / Spa</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>const tanklessLoad = parseFloat(tanklessWaterHeaterLoadEl.value) || 0;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>totalLoadA += tanklessLoad;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>stepsA.push({ label: "v) Tankless Water Heaters / Pool / Spa (100%)", value: tanklessLoad });</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>// 6. EV Supply Equipment</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>const evLoad = parseFloat(evSupplyEquipmentLoadEl.value) || 0;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>totalLoadA += evLoad;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>stepsA.push({ label: "vi) EV Supply Equipment (100%)", value: evLoad });</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>// 7. Other Loads &gt; 1500W</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>let otherLoadsTotalWatts = 0;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>let otherLoadsCalculationDetails = "";</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>const otherLoadEntries = document.querySelectorAll('.other-load-entry');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>const validOtherLoadsValues = [];</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>otherLoadEntries.forEach(entry =&gt; {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>const value = parseFloat(entry.querySelector('.other-load-value').value) || 0;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>if (value &gt; OTHER_LOADS_THRESHOLD_WATTS) {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>validOtherLoadsValues.push(value);</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>});</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>if (validOtherLoadsValues.length &gt; 0) {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>if (hasElectricRangeEl.checked) {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>validOtherLoadsValues.forEach(loadValue =&gt; {<span class="Apple-converted-space"> </span></span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>otherLoadsTotalWatts += loadValue * OTHER_LOADS_WITH_RANGE_PERCENTAGE;<span class="Apple-converted-space"> </span></span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>});</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>otherLoadsCalculationDetails = `Electric range provided. Calculated at 25% of each load &gt; ${OTHER_LOADS_THRESHOLD_WATTS}W. Wattages considered: ${validOtherLoadsValues.join('W, ')}W.`;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>} else {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>const combinedOtherLoad = validOtherLoadsValues.reduce((sum, val) =&gt; sum + val, 0);</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>if (combinedOtherLoad &lt;= OTHER_LOADS_NO_RANGE_INITIAL_THRESHOLD_WATTS) {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>otherLoadsTotalWatts = combinedOtherLoad * OTHER_LOADS_NO_RANGE_INITIAL_PERCENTAGE;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>otherLoadsCalculationDetails = `No electric range. Combined other loads (${combinedOtherLoad}W) &lt;= ${OTHER_LOADS_NO_RANGE_INITIAL_THRESHOLD_WATTS}W. Calculated at 100%.`;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>} else {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>otherLoadsTotalWatts = (OTHER_LOADS_NO_RANGE_INITIAL_THRESHOLD_WATTS * OTHER_LOADS_NO_RANGE_INITIAL_PERCENTAGE) +</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                                       </span>((combinedOtherLoad - OTHER_LOADS_NO_RANGE_INITIAL_THRESHOLD_WATTS) * OTHER_LOADS_NO_RANGE_EXCESS_PERCENTAGE);</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>otherLoadsCalculationDetails = `No electric range. Combined other loads (${combinedOtherLoad}W) &gt; ${OTHER_LOADS_NO_RANGE_INITIAL_THRESHOLD_WATTS}W. ${OTHER_LOADS_NO_RANGE_INITIAL_THRESHOLD_WATTS}W at 100% + ${(combinedOtherLoad - OTHER_LOADS_NO_RANGE_INITIAL_THRESHOLD_WATTS).toFixed(0)}W at 25%.`;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>} else {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>otherLoadsCalculationDetails = `No other loads &gt; ${OTHER_LOADS_THRESHOLD_WATTS}W provided or applicable.`;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>totalLoadA += otherLoadsTotalWatts;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>stepsA.push({ label: `vii) Other Loads &gt; ${OTHER_LOADS_THRESHOLD_WATTS}W`, value: otherLoadsTotalWatts, details: otherLoadsCalculationDetails });</span></p>
+<p class="p2"><span class="s1"><span class="Apple-converted-space">        </span></span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>// Update Results Display</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>calculationStepsAContainerEl.innerHTML = ''; // Clear previous steps</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>stepsA.forEach(step =&gt; {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>const stepDiv = document.createElement('div');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>stepDiv.className = 'mb-2 p-2 bg-gray-700 rounded-md';</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>const contentDiv = document.createElement('div');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>contentDiv.className = 'flex justify-between items-center';</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>const labelSpan = document.createElement('span');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>labelSpan.className = 'text-gray-300';</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>labelSpan.textContent = `${step.label}:`;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>const valueSpan = document.createElement('span');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>valueSpan.className = 'font-semibold text-indigo-400';</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>valueSpan.textContent = `${step.value.toLocaleString()} W`;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>contentDiv.appendChild(labelSpan);</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>contentDiv.appendChild(valueSpan);</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>stepDiv.appendChild(contentDiv);</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>if (step.details) {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>const detailsP = document.createElement('p');</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>detailsP.className = 'calculation-step-details'; // Use defined class</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>detailsP.textContent = step.details;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>stepDiv.appendChild(detailsP);</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>calculationStepsAContainerEl.appendChild(stepDiv);</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>});</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>calculatedLoadADisplayEl.textContent = `${totalLoadA.toLocaleString()} W`;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>finalCalculatedLoadWEl.textContent = `${totalLoadA.toLocaleString()} W`;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>finalCalculatedLoadKWEl.textContent = `(${(totalLoadA / 1000).toFixed(2)} kW)`;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>finalCalculatedLoadAmpsEl.textContent = `(${(totalLoadA / VOLTAGE_FOR_AMPS).toFixed(2)} A @ ${VOLTAGE_FOR_AMPS}V)`;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>}</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>// Event Listeners for inputs</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>const inputsToTrack = [</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>aboveGroundAreaInputEl, belowGroundAreaInputEl, areaUnitEl,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>totalConnectedSpaceHeatingWEl, applyRule62_118_3El, applyRule62_118_4El,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>airConditioningLoadEl, hasElectricRangeEl, electricRangeRatingWEl,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>tanklessWaterHeaterLoadEl, evSupplyEquipmentLoadEl</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>];</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>inputsToTrack.forEach(input =&gt; {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>if (input.type === 'checkbox') {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>input.addEventListener('change', calculateLoad);</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>} else {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>input.addEventListener('input', calculateLoad);</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>});</span></p>
+<p class="p2"><span class="s1"><span class="Apple-converted-space">    </span></span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>// Special handling for rule 62_118_4 disabling rule 62_118_3</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>applyRule62_118_4El.addEventListener('change', function() {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>if (this.checked) {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>applyRule62_118_3El.checked = false;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>applyRule62_118_3El.disabled = true;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>} else {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>applyRule62_118_3El.disabled = false;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>calculateLoad(); // Recalculate when this changes</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>});</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>addOtherLoadButtonEl.addEventListener('click', createOtherLoadEntry);</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>// Initial setup</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>document.addEventListener('DOMContentLoaded', () =&gt; {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>createOtherLoadEntry(); // Add one "Other Load" entry by default</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>calculateLoad(); // Initial calculation</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>});</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">&lt;/script&gt;</span></p>
+<p class="p1"><span class="s1">&lt;/body&gt;</span></p>
+<p class="p1"><span class="s1">&lt;/html&gt;</span></p>
+</body>
+</html>
