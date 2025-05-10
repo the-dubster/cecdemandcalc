@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CEC 2024 Load Calculator (JS - Rule 1a Only)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif; /* Using a common sans-serif font as Inter might not be default */
+        }
+        /* Custom scrollbar for better aesthetics in dark mode */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1f2937; /* gray-800 */
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #4f46e5; /* indigo-600 */
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #4338ca; /* indigo-700 */
+        }
+        .calculation-step-details {
+            font-size: 0.75rem; /* text-xs */
+            color: #9ca3af; /* gray-400 */
+            margin-top: 0.25rem; /* mt-1 */
+        }
+    </style>
+</head>
+<body class="min-h-screen bg-gray-900 text-white p-4 sm:p-8">
+    <div class="max-w-4xl mx-auto">
+        <header class="mb-8 text-center">
+            <h1 class="text-3xl sm:text-4xl font-bold text-indigo-400">CEC 2024 Load Calculator</h1>
+            <p class="text-lg text-gray-400">Single Dwelling (Rule 8-200 1)a) Only)</p>
+            <p class="text-xs text-gray-500 mt-2">
+                Note: This calculator is for estimation purposes only based on CEC 2024 Rule 8-200 1)a), 8-110 & 62-118.
+                Rule 8-200 1)b) is not included in this version.
+                Always consult the official Canadian Electrical Code and a qualified professional for accurate calculations and installations.
+            </p>
+        </header>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <div class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                <h2 class="text-2xl font-semibold mb-6 text-indigo-300 border-b border-gray-700 pb-2">Input Values</h2>
+
+                <fieldset class="mb-6 border border-gray-700 p-4 rounded-md">
+                    <legend class="text-lg font-medium text-indigo-400 px-2">1. Living Area (Rule 8-110)</legend>
+                    <p class="text-xs text-gray-400 mb-1">a) 100% of area on ground floor & areas above ground floor used for living.</p>
+                    <div class="mb-4">
+                        <label for="aboveGroundAreaInput" class="block text-sm font-medium text-gray-300 mb-1">Above-Ground Living Area</label>
+                        <input type="number" id="aboveGroundAreaInput" placeholder="e.g., 1076" class="mt-1 block w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-white">
+                    </div>
+                    <p class="text-xs text-gray-400 mb-1 mt-3">c) 75% of areas below ground &gt;1.8m height.</p>
+                     <div class="mb-4">
+                        <label for="belowGroundAreaInput" class="block text-sm font-medium text-gray-300 mb-1">Below-Ground Living Area (Portion &gt;1.8m height)</label>
+                        <input type="number" id="belowGroundAreaInput" placeholder="e.g., 538" class="mt-1 block w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-white">
+                    </div>
+                    <div class="flex items-center mt-2">
+                        <label class="text-sm font-medium text-gray-300 mr-2">Unit for areas:</label>
+                        <select id="areaUnit" class="h-10 block px-3 py-2 bg-gray-700 border border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-white">
+                            <option value="sqft">ft²</option>
+                            <option value="sqm">m²</option>
+                        </select>
+                    </div>
+                    <p id="totalEffectiveLivingAreaM2Display" class="text-xs text-gray-400 mt-2 p-2 bg-gray-750 rounded-md hidden">Total Effective Living Area: 0.00 m²</p>
+                </fieldset>
+                
+                <fieldset class="mb-6 border border-gray-700 p-4 rounded-md">
+                    <legend class="text-lg font-medium text-indigo-400 px-2">2. Electric Space Heating & Cooling</legend>
+                    <div class="mb-4">
+                        <label for="totalConnectedSpaceHeatingW" class="block text-sm font-medium text-gray-300 mb-1">Total Connected Electric Space Heating Load (W)</label>
+                        <div class="flex items-center">
+                            <input type="number" id="totalConnectedSpaceHeatingW" placeholder="e.g., 15000" class="mt-1 block w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-white">
+                            <span class="ml-2 text-gray-400">W</span>
+                        </div>
+                    </div>
+                    <div class="mb-3 mt-1 space-y-2">
+                        <div class="flex items-center">
+                            <input type="checkbox" id="applyRule62_118_3" class="h-4 w-4 text-indigo-600 border-gray-600 bg-gray-700 rounded focus:ring-indigo-500">
+                            <label for="applyRule62_118_3" class="ml-2 text-sm text-gray-300">Residential w/ individual thermostatic controls (Rule 62-118 3))?</label>
+                        </div>
+                        <div class="flex items-center">
+                            <input type="checkbox" id="applyRule62_118_4" class="h-4 w-4 text-indigo-600 border-gray-600 bg-gray-700 rounded focus:ring-indigo-500">
+                            <label for="applyRule62_118_4" class="ml-2 text-sm text-gray-300">System is electric thermal storage, duct heater, or furnace (Rule 62-118 4))?</label>
+                        </div>
+                    </div>
+                    <p id="calculatedHeatingDemandWDisplay" class="text-sm text-gray-400 mt-1 p-2 bg-gray-750 rounded-md hidden">Calculated Heating Load (after demand): <span class="font-semibold text-indigo-300">0 W</span></p>
+                    
+                    <div class="mb-4 mt-6">
+                        <label for="airConditioningLoad" class="block text-sm font-medium text-gray-300 mb-1">Air Conditioning Load (W)</label>
+                         <div class="flex items-center">
+                            <input type="number" id="airConditioningLoad" placeholder="100% of AC load" class="mt-1 block w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-white">
+                            <span class="ml-2 text-gray-400">W</span>
+                        </div>
+                    </div>
+                </fieldset>
+
+                <fieldset class="mb-6 border border-gray-700 p-4 rounded-md">
+                    <legend class="text-lg font-medium text-indigo-400 px-2">3. Electric Range</legend>
+                    <div class="flex items-center mb-3">
+                        <input type="checkbox" id="hasElectricRange" checked class="h-4 w-4 text-indigo-600 border-gray-600 bg-gray-700 rounded focus:ring-indigo-500">
+                        <label for="hasElectricRange" class="ml-2 text-sm text-gray-300">Electric Range Provided?</label>
+                    </div>
+                    <div id="electricRangeRatingContainer" class="mb-4">
+                        <label for="electricRangeRatingW" class="block text-sm font-medium text-gray-300 mb-1">Electric Range Rating (W)</label>
+                        <div class="flex items-center">
+                            <input type="number" id="electricRangeRatingW" value="6000" placeholder="e.g., 13000" class="mt-1 block w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-white">
+                            <span class="ml-2 text-gray-400">W</span>
+                        </div>
+                    </div>
+                </fieldset>
+
+                <fieldset class="mb-6 border border-gray-700 p-4 rounded-md">
+                    <legend class="text-lg font-medium text-indigo-400 px-2">4. Other Major Loads (100% Demand)</legend>
+                    <div class="mb-4">
+                        <label for="tanklessWaterHeaterLoad" class="block text-sm font-medium text-gray-300 mb-1">Tankless Water Heaters / Pool / Spa (W)</label>
+                        <div class="flex items-center">
+                            <input type="number" id="tanklessWaterHeaterLoad" class="mt-1 block w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-white">
+                            <span class="ml-2 text-gray-400">W</span>
+                        </div>
+                    </div>
+                     <div class="mb-4">
+                        <label for="evSupplyEquipmentLoad" class="block text-sm font-medium text-gray-300 mb-1">EV Supply Equipment (EVSE) (W)</label>
+                        <div class="flex items-center">
+                            <input type="number" id="evSupplyEquipmentLoad" class="mt-1 block w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-white">
+                            <span class="ml-2 text-gray-400">W</span>
+                        </div>
+                    </div>
+                </fieldset>
+
+                <fieldset class="mb-6 border border-gray-700 p-4 rounded-md">
+                    <legend class="text-lg font-medium text-indigo-400 px-2">5. Other Loads (each &gt; 1500W)</legend>
+                    <p class="text-xs text-gray-400 mb-3">Individual loads &gt;1500W not covered above.</p>
+                    <div id="otherLoadsContainer">
+                        </div>
+                    <button id="addOtherLoadButton" class="mt-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-md text-sm">Add Another Load</button>
+                </fieldset>
+            </div>
+
+            <div class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                <h2 class="text-2xl font-semibold mb-6 text-indigo-300 border-b border-gray-700 pb-2">Calculation Results</h2>
+                
+                <div class="mb-6">
+                    <h3 class="text-xl font-semibold mb-3 text-indigo-400">Rule 8-200 1) a) Calculation Details:</h3>
+                    <div id="calculationStepsAContainer">
+                        </div>
+                    <div class="mt-4 p-3 bg-gray-700 rounded-md shadow">
+                        <div class="flex justify-between items-center">
+                            <span class="text-lg font-semibold text-gray-200">Total for Rule 1) a):</span>
+                            <span id="calculatedLoadADisplay" class="text-xl font-bold text-green-400">0 W</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="mt-8 p-6 bg-indigo-600 rounded-lg shadow-2xl mb-8">
+                    <h3 class="text-2xl font-bold mb-2 text-white text-center">Final Calculated Load</h3>
+                    <p class="text-sm text-indigo-200 mb-4 text-center">(Based on Rule 8-200 1)a) Only)</p>
+                    <p id="finalCalculatedLoadW" class="text-4xl font-extrabold text-yellow-300 text-center">0 W</p>
+                    <p id="finalCalculatedLoadKW" class="text-2xl font-bold text-yellow-200 text-center mt-1">(0.00 kW)</p>
+                    <p id="finalCalculatedLoadAmps" class="text-xl font-bold text-yellow-100 text-center mt-1">(0.00 A @ 240V)</p>
+                </div>
+            </div>
+        </div>
+         <footer class="mt-12 text-center text-sm text-gray-500">
+            <p>&copy; <span id="currentYear"></span> CEC Load Calculator. For estimation purposes only.</p>
+            <p>Refer to the official Canadian Electrical Code 2024 and qualified professionals.</p>
+        </footer>
+    </div>
+
+<script>
+    // Constants for CEC calculations
+    const SQFT_TO_SQM_CONVERSION = 0.092903;
+    const BASE_LOAD_AREA_THRESHOLD = 90; // m²
+    const BASE_LOAD_INITIAL_WATTS = 5000; // W
+    const ADDITIONAL_LOAD_PER_AREA_INCREMENT = 1000; // W per 90m² or portion
+    const RANGE_BASE_LOAD_WATTS = 6000; // W
+    const RANGE_EXCESS_THRESHOLD_W = 12000; // Watts
+    const RANGE_EXCESS_PERCENTAGE = 0.40; // 40%
+    const OTHER_LOADS_THRESHOLD_WATTS = 1500; // W
+    const OTHER_LOADS_NO_RANGE_INITIAL_THRESHOLD_WATTS = 6000; // W
+    const OTHER_LOADS_NO_RANGE_INITIAL_PERCENTAGE = 1.00; // 100%
+    const OTHER_LOADS_NO_RANGE_EXCESS_PERCENTAGE = 0.25; // 25%
+    const OTHER_LOADS_WITH_RANGE_PERCENTAGE = 0.25; // 25%
+    const VOLTAGE_FOR_AMPS = 240; // Volts
+
+    // Constants for Rule 62-118
+    const HEATING_DEMAND_FIRST_THRESHOLD_KW = 10; // kW
+    const HEATING_DEMAND_FIRST_THRESHOLD_W = HEATING_DEMAND_FIRST_THRESHOLD_KW * 1000; // Watts
+    const HEATING_DEMAND_FIRST_PERCENTAGE = 1.00; // 100%
+    const HEATING_DEMAND_BALANCE_PERCENTAGE = 0.75; // 75%
+
+    // DOM Elements
+    const aboveGroundAreaInputEl = document.getElementById('aboveGroundAreaInput');
+    const belowGroundAreaInputEl = document.getElementById('belowGroundAreaInput');
+    const areaUnitEl = document.getElementById('areaUnit');
+    const totalEffectiveLivingAreaM2DisplayEl = document.getElementById('totalEffectiveLivingAreaM2Display');
+
+    const totalConnectedSpaceHeatingWEl = document.getElementById('totalConnectedSpaceHeatingW');
+    const applyRule62_118_3El = document.getElementById('applyRule62_118_3');
+    const applyRule62_118_4El = document.getElementById('applyRule62_118_4');
+    const calculatedHeatingDemandWDisplayEl = document.getElementById('calculatedHeatingDemandWDisplay');
+    
+    const airConditioningLoadEl = document.getElementById('airConditioningLoad');
+    const hasElectricRangeEl = document.getElementById('hasElectricRange');
+    const electricRangeRatingContainerEl = document.getElementById('electricRangeRatingContainer');
+    const electricRangeRatingWEl = document.getElementById('electricRangeRatingW');
+
+    const tanklessWaterHeaterLoadEl = document.getElementById('tanklessWaterHeaterLoad');
+    const evSupplyEquipmentLoadEl = document.getElementById('evSupplyEquipmentLoad');
+    
+    const otherLoadsContainerEl = document.getElementById('otherLoadsContainer');
+    const addOtherLoadButtonEl = document.getElementById('addOtherLoadButton');
+
+    const calculationStepsAContainerEl = document.getElementById('calculationStepsAContainer');
+    const calculatedLoadADisplayEl = document.getElementById('calculatedLoadADisplay');
+    const finalCalculatedLoadWEl = document.getElementById('finalCalculatedLoadW');
+    const finalCalculatedLoadKWEl = document.getElementById('finalCalculatedLoadKW');
+    const finalCalculatedLoadAmpsEl = document.getElementById('finalCalculatedLoadAmps');
+    
+    document.getElementById('currentYear').textContent = new Date().getFullYear();
+
+    let otherLoadCount = 0;
+
+    function createOtherLoadEntry() {
+        otherLoadCount++;
+        const entryDiv = document.createElement('div');
+        entryDiv.className = 'grid grid-cols-1 sm:grid-cols-3 gap-x-2 items-end mb-2 other-load-entry';
+        entryDiv.id = `otherLoadEntry-${otherLoadCount}`;
+
+        // Name Input
+        const nameDiv = document.createElement('div');
+        nameDiv.className = 'mb-4 sm:col-span-2';
+        const nameLabel = document.createElement('label');
+        nameLabel.className = 'block text-sm font-medium text-gray-300 mb-1';
+        nameLabel.textContent = `Load ${otherLoadCount} Name`;
+        const nameInput = document.createElement('input');
+        nameInput.type = 'text';
+        nameInput.placeholder = 'e.g., Clothes Dryer, Welder';
+        nameInput.className = 'other-load-name mt-1 block w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-white';
+        nameDiv.appendChild(nameLabel);
+        nameDiv.appendChild(nameInput);
+
+        // Value Input
+        const valueDiv = document.createElement('div');
+        valueDiv.className = 'mb-4 sm:col-span-1';
+        const valueLabel = document.createElement('label');
+        valueLabel.className = 'block text-sm font-medium text-gray-300 mb-1';
+        valueLabel.textContent = `Value (W)`;
+        const valueInputDiv = document.createElement('div');
+        valueInputDiv.className = 'flex items-center';
+        const valueInput = document.createElement('input');
+        valueInput.type = 'number';
+        valueInput.placeholder = 'e.g., 5000';
+        valueInput.className = 'other-load-value mt-1 block w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-white';
+        const valueUnit = document.createElement('span');
+        valueUnit.className = 'ml-2 text-gray-400';
+        valueUnit.textContent = 'W';
+        valueInputDiv.appendChild(valueInput);
+        valueInputDiv.appendChild(valueUnit);
+        valueDiv.appendChild(valueLabel);
+        valueDiv.appendChild(valueInputDiv);
+        
+        // Remove Button
+        const removeButton = document.createElement('button');
+        removeButton.textContent = 'Remove';
+        removeButton.className = 'ml-auto sm:ml-0 p-2 bg-red-600 hover:bg-red-700 text-white rounded-md text-xs h-10 mt-1 sm:mt-7';
+        removeButton.onclick = function() { 
+            entryDiv.remove();
+            calculateLoad(); // Recalculate when a load is removed
+        };
+
+        entryDiv.appendChild(nameDiv);
+        entryDiv.appendChild(valueDiv);
+        entryDiv.appendChild(removeButton);
+        otherLoadsContainerEl.appendChild(entryDiv);
+
+        // Add event listeners to new inputs
+        nameInput.addEventListener('input', calculateLoad);
+        valueInput.addEventListener('input', calculateLoad);
+    }
+
+
+    function calculateLoad() {
+        const stepsA = [];
+        let totalLoadA = 0;
+
+        // 1. Living Area Calculation
+        let inputAboveM2 = parseFloat(aboveGroundAreaInputEl.value) || 0;
+        let inputBelowM2 = parseFloat(belowGroundAreaInputEl.value) || 0;
+        if (areaUnitEl.value === 'sqft') {
+            inputAboveM2 *= SQFT_TO_SQM_CONVERSION;
+            inputBelowM2 *= SQFT_TO_SQM_CONVERSION;
+        }
+        const effectiveAboveGroundM2 = inputAboveM2;
+        const effectiveBelowGroundM2 = inputBelowM2 * 0.75;
+        const currentTotalEffectiveLivingAreaM2 = effectiveAboveGroundM2 + effectiveBelowGroundM2;
+        
+        if (currentTotalEffectiveLivingAreaM2 > 0) {
+            totalEffectiveLivingAreaM2DisplayEl.textContent = `Total Effective Living Area: ${currentTotalEffectiveLivingAreaM2.toFixed(2)} m²`;
+            totalEffectiveLivingAreaM2DisplayEl.classList.remove('hidden');
+        } else {
+            totalEffectiveLivingAreaM2DisplayEl.classList.add('hidden');
+        }
+
+        let basicLoadLivingArea = 0;
+        let basicLoadDetails = "";
+        if (currentTotalEffectiveLivingAreaM2 > 0) {
+            basicLoadLivingArea = BASE_LOAD_INITIAL_WATTS;
+            basicLoadDetails = `${BASE_LOAD_INITIAL_WATTS}W for first ${Math.min(currentTotalEffectiveLivingAreaM2, BASE_LOAD_AREA_THRESHOLD).toFixed(2)} m² of effective living area.`;
+            if (currentTotalEffectiveLivingAreaM2 > BASE_LOAD_AREA_THRESHOLD) {
+                const excessArea = currentTotalEffectiveLivingAreaM2 - BASE_LOAD_AREA_THRESHOLD;
+                const additionalPortions = Math.ceil(excessArea / BASE_LOAD_AREA_THRESHOLD);
+                const additionalLoad = additionalPortions * ADDITIONAL_LOAD_PER_AREA_INCREMENT;
+                basicLoadLivingArea += additionalLoad;
+                basicLoadDetails += ` + ${additionalLoad}W for ${excessArea.toFixed(2)} m² excess (${additionalPortions} portion(s) of ${BASE_LOAD_AREA_THRESHOLD} m²).`;
+            }
+        }
+        stepsA.push({ label: "i) & ii) Basic Living Area Load", value: basicLoadLivingArea, details: basicLoadDetails || `Effective Living Area: ${currentTotalEffectiveLivingAreaM2.toFixed(2)} m²` });
+        totalLoadA += basicLoadLivingArea;
+
+        // 2. Electric Space Heating Calculation (Rule 62-118)
+        const connectedHeatingW = parseFloat(totalConnectedSpaceHeatingWEl.value) || 0;
+        let currentCalculatedHeatingDemandW = 0;
+        let heatingDemandDetails = "No connected heating load or specific rule applied.";
+
+        if (connectedHeatingW > 0) {
+            if (applyRule62_118_4El.checked) {
+                currentCalculatedHeatingDemandW = connectedHeatingW;
+                heatingDemandDetails = `Rule 62-118 4) applied (Special System): 100% of ${connectedHeatingW.toLocaleString()}W.`;
+            } else if (applyRule62_118_3El.checked) {
+                if (connectedHeatingW <= HEATING_DEMAND_FIRST_THRESHOLD_W) {
+                    currentCalculatedHeatingDemandW = connectedHeatingW * HEATING_DEMAND_FIRST_PERCENTAGE;
+                    heatingDemandDetails = `Rule 62-118 3) applied: First 10kW (or less) at 100%. Connected: ${connectedHeatingW.toLocaleString()}W.`;
+                } else {
+                    const firstPart = HEATING_DEMAND_FIRST_THRESHOLD_W * HEATING_DEMAND_FIRST_PERCENTAGE;
+                    const balancePart = (connectedHeatingW - HEATING_DEMAND_FIRST_THRESHOLD_W) * HEATING_DEMAND_BALANCE_PERCENTAGE;
+                    currentCalculatedHeatingDemandW = firstPart + balancePart;
+                    heatingDemandDetails = `Rule 62-118 3) applied: ${HEATING_DEMAND_FIRST_THRESHOLD_W.toLocaleString()}W at 100% + ${(connectedHeatingW - HEATING_DEMAND_FIRST_THRESHOLD_W).toLocaleString()}W at 75%. Connected: ${connectedHeatingW.toLocaleString()}W.`;
+                }
+            } else {
+                currentCalculatedHeatingDemandW = connectedHeatingW;
+                heatingDemandDetails = `100% of connected heating load (${connectedHeatingW.toLocaleString()}W) applied (no specific residential demand rule selected or applicable).`;
+            }
+            calculatedHeatingDemandWDisplayEl.querySelector('span').textContent = `${currentCalculatedHeatingDemandW.toLocaleString()} W`;
+            calculatedHeatingDemandWDisplayEl.classList.remove('hidden');
+        } else {
+            calculatedHeatingDemandWDisplayEl.classList.add('hidden');
+        }
+        totalLoadA += currentCalculatedHeatingDemandW;
+        stepsA.push({ label: "iii) Electric Space Heating", value: currentCalculatedHeatingDemandW, details: heatingDemandDetails });
+        
+        // 3. Air Conditioning
+        const ac = parseFloat(airConditioningLoadEl.value) || 0;
+        totalLoadA += ac;
+        stepsA.push({ label: "iii) Air Conditioning (100%)", value: ac });
+
+        // 4. Electric Range
+        let rangeLoad = 0;
+        let rangeDetails = "No electric range provided.";
+        if (hasElectricRangeEl.checked) {
+            electricRangeRatingContainerEl.style.display = 'block';
+            const rangeRatingWVal = parseFloat(electricRangeRatingWEl.value) || 0;
+            rangeLoad = RANGE_BASE_LOAD_WATTS;
+            rangeDetails = `${RANGE_BASE_LOAD_WATTS}W for single range`;
+            if (rangeRatingWVal > RANGE_EXCESS_THRESHOLD_W) {
+                const excessW = rangeRatingWVal - RANGE_EXCESS_THRESHOLD_W;
+                const additionalRangeLoad = excessW * RANGE_EXCESS_PERCENTAGE;
+                rangeLoad += additionalRangeLoad;
+                rangeDetails += ` + ${additionalRangeLoad.toFixed(0)}W (40% of ${excessW.toFixed(0)}W excess over ${RANGE_EXCESS_THRESHOLD_W}W)`;
+            }
+        } else {
+            electricRangeRatingContainerEl.style.display = 'none';
+        }
+        totalLoadA += rangeLoad;
+        stepsA.push({ label: "iv) Electric Range Load", value: rangeLoad, details: rangeDetails });
+
+        // 5. Tankless Water Heaters / Pool / Spa
+        const tanklessLoad = parseFloat(tanklessWaterHeaterLoadEl.value) || 0;
+        totalLoadA += tanklessLoad;
+        stepsA.push({ label: "v) Tankless Water Heaters / Pool / Spa (100%)", value: tanklessLoad });
+
+        // 6. EV Supply Equipment
+        const evLoad = parseFloat(evSupplyEquipmentLoadEl.value) || 0;
+        totalLoadA += evLoad;
+        stepsA.push({ label: "vi) EV Supply Equipment (100%)", value: evLoad });
+
+        // 7. Other Loads > 1500W
+        let otherLoadsTotalWatts = 0;
+        let otherLoadsCalculationDetails = "";
+        const otherLoadEntries = document.querySelectorAll('.other-load-entry');
+        const validOtherLoadsValues = [];
+        otherLoadEntries.forEach(entry => {
+            const value = parseFloat(entry.querySelector('.other-load-value').value) || 0;
+            if (value > OTHER_LOADS_THRESHOLD_WATTS) {
+                validOtherLoadsValues.push(value);
+            }
+        });
+
+        if (validOtherLoadsValues.length > 0) {
+            if (hasElectricRangeEl.checked) {
+                validOtherLoadsValues.forEach(loadValue => { 
+                    otherLoadsTotalWatts += loadValue * OTHER_LOADS_WITH_RANGE_PERCENTAGE; 
+                });
+                otherLoadsCalculationDetails = `Electric range provided. Calculated at 25% of each load > ${OTHER_LOADS_THRESHOLD_WATTS}W. Wattages considered: ${validOtherLoadsValues.join('W, ')}W.`;
+            } else {
+                const combinedOtherLoad = validOtherLoadsValues.reduce((sum, val) => sum + val, 0);
+                if (combinedOtherLoad <= OTHER_LOADS_NO_RANGE_INITIAL_THRESHOLD_WATTS) {
+                    otherLoadsTotalWatts = combinedOtherLoad * OTHER_LOADS_NO_RANGE_INITIAL_PERCENTAGE;
+                    otherLoadsCalculationDetails = `No electric range. Combined other loads (${combinedOtherLoad}W) <= ${OTHER_LOADS_NO_RANGE_INITIAL_THRESHOLD_WATTS}W. Calculated at 100%.`;
+                } else {
+                    otherLoadsTotalWatts = (OTHER_LOADS_NO_RANGE_INITIAL_THRESHOLD_WATTS * OTHER_LOADS_NO_RANGE_INITIAL_PERCENTAGE) +
+                                       ((combinedOtherLoad - OTHER_LOADS_NO_RANGE_INITIAL_THRESHOLD_WATTS) * OTHER_LOADS_NO_RANGE_EXCESS_PERCENTAGE);
+                    otherLoadsCalculationDetails = `No electric range. Combined other loads (${combinedOtherLoad}W) > ${OTHER_LOADS_NO_RANGE_INITIAL_THRESHOLD_WATTS}W. ${OTHER_LOADS_NO_RANGE_INITIAL_THRESHOLD_WATTS}W at 100% + ${(combinedOtherLoad - OTHER_LOADS_NO_RANGE_INITIAL_THRESHOLD_WATTS).toFixed(0)}W at 25%.`;
+                }
+            }
+        } else {
+            otherLoadsCalculationDetails = `No other loads > ${OTHER_LOADS_THRESHOLD_WATTS}W provided or applicable.`;
+        }
+        totalLoadA += otherLoadsTotalWatts;
+        stepsA.push({ label: `vii) Other Loads > ${OTHER_LOADS_THRESHOLD_WATTS}W`, value: otherLoadsTotalWatts, details: otherLoadsCalculationDetails });
+        
+        // Update Results Display
+        calculationStepsAContainerEl.innerHTML = ''; // Clear previous steps
+        stepsA.forEach(step => {
+            const stepDiv = document.createElement('div');
+            stepDiv.className = 'mb-2 p-2 bg-gray-700 rounded-md';
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'flex justify-between items-center';
+            const labelSpan = document.createElement('span');
+            labelSpan.className = 'text-gray-300';
+            labelSpan.textContent = `${step.label}:`;
+            const valueSpan = document.createElement('span');
+            valueSpan.className = 'font-semibold text-indigo-400';
+            valueSpan.textContent = `${step.value.toLocaleString()} W`;
+            contentDiv.appendChild(labelSpan);
+            contentDiv.appendChild(valueSpan);
+            stepDiv.appendChild(contentDiv);
+            if (step.details) {
+                const detailsP = document.createElement('p');
+                detailsP.className = 'calculation-step-details'; // Use defined class
+                detailsP.textContent = step.details;
+                stepDiv.appendChild(detailsP);
+            }
+            calculationStepsAContainerEl.appendChild(stepDiv);
+        });
+
+        calculatedLoadADisplayEl.textContent = `${totalLoadA.toLocaleString()} W`;
+        finalCalculatedLoadWEl.textContent = `${totalLoadA.toLocaleString()} W`;
+        finalCalculatedLoadKWEl.textContent = `(${(totalLoadA / 1000).toFixed(2)} kW)`;
+        finalCalculatedLoadAmpsEl.textContent = `(${(totalLoadA / VOLTAGE_FOR_AMPS).toFixed(2)} A @ ${VOLTAGE_FOR_AMPS}V)`;
+    }
+
+    // Event Listeners for inputs
+    const inputsToTrack = [
+        aboveGroundAreaInputEl, belowGroundAreaInputEl, areaUnitEl,
+        totalConnectedSpaceHeatingWEl, applyRule62_118_3El, applyRule62_118_4El,
+        airConditioningLoadEl, hasElectricRangeEl, electricRangeRatingWEl,
+        tanklessWaterHeaterLoadEl, evSupplyEquipmentLoadEl
+    ];
+
+    inputsToTrack.forEach(input => {
+        if (input.type === 'checkbox') {
+            input.addEventListener('change', calculateLoad);
+        } else {
+            input.addEventListener('input', calculateLoad);
+        }
+    });
+    
+    // Special handling for rule 62_118_4 disabling rule 62_118_3
+    applyRule62_118_4El.addEventListener('change', function() {
+        if (this.checked) {
+            applyRule62_118_3El.checked = false;
+            applyRule62_118_3El.disabled = true;
+        } else {
+            applyRule62_118_3El.disabled = false;
+        }
+        calculateLoad(); // Recalculate when this changes
+    });
+
+
+    addOtherLoadButtonEl.addEventListener('click', createOtherLoadEntry);
+
+    // Initial setup
+    document.addEventListener('DOMContentLoaded', () => {
+        createOtherLoadEntry(); // Add one "Other Load" entry by default
+        calculateLoad(); // Initial calculation
+    });
+
+</script>
+</body>
+</html>
